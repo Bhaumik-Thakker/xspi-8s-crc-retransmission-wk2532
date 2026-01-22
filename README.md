@@ -1,110 +1,93 @@
-# xspi-8s-crc-retransmission-wk2532
-This repository contains Verilog code for a JEDEC JESD251C compliant xSPI controller and slave. It features high-speed (400 MB/s) transfers, dual protocol modes (1S-1S-1S and 8D-8D-8D), and robust CRC8 error checking with retransmission logic. A comprehensive testbench has been developed to verify all functionality.
-# xSPI – EXpanded Serial Peripheral Interface (xSPI) for Non Volatile Memory Devices Protocol (Controller + Slave)
+# xSPI (xSPI-like) Controller + Slave in Verilog (CRC8 + Retransmission)
 
-## Overview
-This repository implements a (xSPI) in Verilog, with both a **controller (master)** and a **slave**.  
-It supports command/address/data transactions, CRC checking, and optional retransmission on CRC errors.
+This repository contains a small **simulation-focused** Verilog design that models an **xSPI-inspired** command/address/data protocol over an **8-bit shared I/O bus**, with **CRC8 checking** and **automatic retransmission** on CRC errors.
 
-The design uses an **8-bit wide IO bus** with shared tri-state-style control (simplified as multiplexed outputs here).  
-It is intended for **simulation, testing, or as a template** for building custom synchronous serial protocols.
+> Note: The current RTL is an educational / template implementation and does **not** aim to be a complete JEDEC JESD251 (xSPI) drop-in replacement. It is best treated as a starting point for learning, experimenting, and building out a more realistic PHY/timing model.
 
----
+## Highlights
 
-## Top-Level Structure
-The design is split into several modules:
+- Controller (master) + slave RTL
+- Command + 48-bit address phase
+- Optional 64-bit data phase (read or write)
+- CRC8 (poly `0x07`) for **command+address** and **data**
+- Retransmission logic (up to 3 retries)
+- Self-contained testbench + VCD waveform dump
 
-| Module | Description |
-|--------|-------------|
-| **`xspi_top`** | Top-level that instantiates the master (`xspi_sopi_controller`) and slave (`xspi_sopi_slave`), and connects them via a shared IO bus. |
-| **`xspi_sopi_controller`** | Implements the **master**: sends command, address, optional write data, and checks received data using CRC8. Handles retransmission on CRC mismatch. |
-| **`xspi_sopi_slave`** | Implements the **slave**: receives command/address/data, stores or returns data from a small internal memory register, and responds with CRC8 checks. |
-| **`crc8`** | Byte-wise CRC8 generator (polynomial `0x07`) for the master. |
-| **`crc8_slave`** | Same as `crc8` but clocked on the slave side (falling edge). |
+## Repository layout
 
----
+```
+.
+├── src/                  # Synthesizable-ish RTL
+│   ├── xspi_top.v
+│   ├── xspi_sopi_controller.v
+│   ├── xspi_sopi_slave.v
+│   ├── crc8.v
+│   └── crc8_slave.v
+├── tb/                   # Testbench
+│   └── xspi_stimulus.v
+├── docs/
+│   └── waveform.png
+├── .github/workflows/     # CI (Icarus)
+├── Makefile
+└── LICENSE
+```
 
-## Key Features
-- **8-bit command phase** – Master sends one command byte.
-- **48-bit address phase** – Master sends a 6-byte address.
-- **64-bit data transfers** – Optional write or read.
-- **CRC8 checks** – Separate CRCs for:
-  - Command + Address
-  - Data payload
-- **Error Handling** – Retransmission (up to 3 times) if:
-  - Master detects CRC error from slave
-  - Slave detects CRC error from master
-- **Parameterizable Commands** – Example:
-  - `0xFF` → Read
-  - `0xA5` → Write
+## Protocol summary
 
----
+A transaction is modeled as a sequence of byte transfers on the shared 8-bit bus:
 
-## Protocol Timing
-A full transaction typically follows this sequence:
+1. **Command** (1 byte)
+2. **Address** (6 bytes = 48-bit)
+3. **CRC8(Cmd+Addr)** (1 byte)
+4. **Write (`0xA5`)**: 8 data bytes + CRC8(data)
+5. **Read  (`0xFF`)**: slave waits a fixed latency, then returns 8 data bytes + CRC8(data)
 
-1. **Master asserts `CS_n` low**.
-2. **Send Command** (1 byte) → CRC update.
-3. **Send Address** (6 bytes) → CRC update.
-4. **Send CRC for Command+Address**.
-5. Depending on command:
-   - **Read (`0xFF`)**:
-     - Slave waits fixed latency (`Latency = 6 cycles`)
-     - Slave sends 8 bytes of data + CRC.
-   - **Write (`0xA5`)**:
-     - Master sends 8 bytes of data + CRC.
-6. **CRC Validation** – Both sides compare CRCs and set error/match flags.
-7. **Retransmit if necessary** (up to 3 attempts).
+The included testbench performs:
 
----
+- A **write** of `64'h1122334455667788` to address `48'h6655443322AB`
+- A **read** back from the same address and compares the returned data
 
-## I/O Ports – Top Level (`xspi_top`)
-| Signal | Direction | Width | Description |
-|--------|-----------|-------|-------------|
-| `clk` | in | 1 | System clock |
-| `rst_n` | in | 1 | Active-low reset |
-| `start` | in | 1 | Start transaction trigger |
-| `command` | in | 8 | Command byte |
-| `address` | in | 48 | Target address |
-| `wr_data` | in | 64 | Data to write (if write command) |
-| `rd_data` | out | 64 | Data read from slave |
-| `done` | out | 1 | Transaction complete flag |
-| `ready` | out | 1 | Slave ready status |
-| `crc_*` | out | 1 | CRC match/error flags for debug |
+## Waveform
 
----
+![Waveform](docs/waveform.png)
 
-## CRC Details
-- **Polynomial:** `x^8 + x^2 + x + 1` (`0x07`)
-- **Initial value:** `0x00`
-- **Byte-at-a-time processing**
-- **Separate CRC blocks for:**
-  - Command/Address (CA)
-  - Data
+## Quick start (simulation)
 
----
+### Requirements
 
-## Retransmission Logic
-- Both master and slave maintain a `retransmit_cnt`.
-- If CRC mismatch occurs:
-  - Retry from the **command phase**.
-  - Limit: 3 retransmissions.
+- Icarus Verilog (`iverilog`, `vvp`)
+- GTKWave (optional, for viewing `*.vcd`)
 
----
+### Run
 
-## Example Usage (Simulation)
-You can simulate the protocol using a testbench like:
+```bash
+make sim
+```
 
-```verilog
-initial begin
-    rst_n = 0;
-    clk = 0;
-    #10 rst_n = 1;
-    start = 1;
-    command = 8'hA5; // Write
-    address = 48'h123456_ABCDEF;
-    wr_data = 64'hDEADBEEF_CAFE_BABE;
-    #10 start = 0;
-end
+This produces a waveform at:
 
-always #5 clk = ~clk;
+- `build/xspi_tb.vcd`
+
+### View waveform
+
+```bash
+make wave
+```
+
+## Notes on retransmission / CRC error injection
+
+The RTL includes retry logic on both controller and slave sides. The current slave implementation also contains logic that can intentionally flag CRC errors (useful for demonstrating and verifying the retransmission path). If you want the slave to behave strictly as a normal endpoint (no forced CRC failures), remove or gate the corresponding logic in `xspi_sopi_slave.v`.
+
+## License
+
+MIT (edit `LICENSE` and replace `<YOUR_NAME>`).
+
+## Roadmap ideas
+
+If you want this project to read as a stronger portfolio piece on GitHub, a good next set of increments would be:
+
+- Add `default_nettype none` + explicit net declarations
+- Make the testbench fail CI on mismatch (`$fatal`) and add multiple randomized trials
+- Add a simple memory map (multiple addresses) instead of a single register
+- Add coverage points / assertions for CRC and retry behavior
+- Add a real serial PHY layer (toggle `sck`, DDR sampling, DQS, etc.) once the high-level flow is locked down
